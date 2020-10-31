@@ -2,9 +2,15 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/gocraft/dbr/dialect"
+	"github.com/gocraft/dbr/v2"
+	"github.com/joho/godotenv"
+	"github.com/muhammadisa/godbconn"
 	"github.com/muhammadisa/goredisku/goredisku"
 )
 
@@ -12,7 +18,7 @@ import (
 type Person struct {
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
-	Age       int    `json:"age"`
+	Ages      int    `json:"age"`
 }
 
 func main() {
@@ -25,22 +31,48 @@ func main() {
 		Debug:    true,
 	}.Connect()
 
-	// Create command from Client
-	command := goredisku.GoRedisKu{
-		Client:       client,
-		GlobalExpire: time.Duration(60000) * time.Millisecond,
+	// connect to db
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
 	}
+	// Load database credential env and use it
+	db, err := godbconn.DBCred{
+		DBDriver:   "mysql",
+		DBHost:     os.Getenv("DB_HOST"),
+		DBPort:     os.Getenv("DB_PORT"),
+		DBUser:     os.Getenv("DB_USER"),
+		DBPassword: os.Getenv("DB_PASSWORD"),
+		DBName:     os.Getenv("DB_NAME"),
+	}.Connect()
+	if err != nil {
+		log.Fatal(err)
+	}
+	conn := &dbr.Connection{
+		DB:            db,
+		EventReceiver: &dbr.NullEventReceiver{},
+		Dialect:       dialect.MySQL,
+	}
+	conn.SetMaxOpenConns(10)
+	session := conn.NewSession(nil)
+	session.Begin()
+
+	// Create command from Client
+	command := goredisku.NewGrkClient(
+		client,
+		time.Duration(60000)*time.Millisecond,
+	)
 
 	person1 := Person{
 		FirstName: "Muhammad Isa",
 		LastName:  "Wijaya Kusuma 1",
-		Age:       21,
+		Ages:      21,
 	}
 
 	person2 := Person{
 		FirstName: "Olav",
 		LastName:  "Alan Walker 2",
-		Age:       28,
+		Ages:      28,
 	}
 
 	command.WT(
@@ -48,6 +80,13 @@ func main() {
 		person1,
 		func() {
 			fmt.Println("Write through db")
+			_, err := session.InsertInto("persons").
+				Columns("id", "first_name", "last_name", "ages").
+				Record(&person1).
+				Exec()
+			if err != nil {
+				log.Fatal(err)
+			}
 		},
 	)
 	command.WB(
@@ -56,7 +95,13 @@ func main() {
 		func(wg *sync.WaitGroup, mtx *sync.Mutex) {
 			mtx.Lock()
 			fmt.Println("Write back db")
-			time.Sleep(3 * time.Second)
+			_, err := session.InsertInto("persons").
+				Columns("id", "first_name", "last_name", "ages").
+				Record(&person2).
+				Exec()
+			if err != nil {
+				log.Fatal(err)
+			}
 			mtx.Unlock()
 			wg.Done()
 		},

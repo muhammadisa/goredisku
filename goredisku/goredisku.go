@@ -32,17 +32,19 @@ type IGoRedisKu interface {
 	Set(key string, value interface{}) (interface{}, error)
 	Get(key string, into interface{}) error
 	Del(key string) (int64, error)
+	WT(key string, value interface{}, dbInteract event) error
+	WB(key string, value interface{}, dbInteract wgAndMtx) error
 }
 
-// GoRedisKu struct
-type GoRedisKu struct {
+// goRedisKu struct
+type goRedisKu struct {
 	Client       *redis.Client
 	GlobalExpire time.Duration
 }
 
 // NewGrkClient create client for interacting to redis db
 func NewGrkClient(client *redis.Client, globalExpire time.Duration) IGoRedisKu {
-	return &GoRedisKu{
+	return &goRedisKu{
 		Client:       client,
 		GlobalExpire: globalExpire,
 	}
@@ -57,7 +59,7 @@ func (rc RedisCred) Connect() *redis.Client {
 	})
 }
 
-func (grk *GoRedisKu) storeSync(
+func (grk *goRedisKu) storeSync(
 	key string,
 	value interface{},
 	wg *sync.WaitGroup,
@@ -89,7 +91,7 @@ func (grk *GoRedisKu) storeSync(
 	return <-fatalErrors
 }
 
-func (grk *GoRedisKu) store(
+func (grk *goRedisKu) store(
 	key string,
 	value interface{},
 ) error {
@@ -113,7 +115,7 @@ func (grk *GoRedisKu) store(
 }
 
 // WT is Write Through mechanism for storing cache
-func (grk *GoRedisKu) WT(
+func (grk *goRedisKu) WT(
 	key string,
 	value interface{},
 	dbInteract event,
@@ -122,18 +124,20 @@ func (grk *GoRedisKu) WT(
 	var mtx sync.Mutex
 	wg.Add(1)
 
+	// inserting to cache
 	err := grk.storeSync(key, value, &wg, &mtx)
 	if err != nil {
 		return err
 	}
-
 	wg.Wait()
+
+	// exec event inserting to db
 	dbInteract()
 	return nil
 }
 
 // WB is Write Back mechanism for storing cache
-func (grk *GoRedisKu) WB(
+func (grk *goRedisKu) WB(
 	key string,
 	value interface{},
 	dbInteract wgAndMtx,
@@ -142,9 +146,11 @@ func (grk *GoRedisKu) WB(
 	var mtx sync.Mutex
 	wg.Add(1)
 
+	// exec event inserting to db
 	go dbInteract(&wg, &mtx)
-
 	wg.Wait()
+
+	// inserting to cache
 	err := grk.store(key, value)
 	if err != nil {
 		return err
@@ -153,7 +159,7 @@ func (grk *GoRedisKu) WB(
 }
 
 // Set key value to redis cache db
-func (grk *GoRedisKu) Set(key string, value interface{}) (interface{}, error) {
+func (grk *goRedisKu) Set(key string, value interface{}) (interface{}, error) {
 	result, err := msgpack.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -166,7 +172,7 @@ func (grk *GoRedisKu) Set(key string, value interface{}) (interface{}, error) {
 }
 
 // Get key value from redis cache db
-func (grk *GoRedisKu) Get(key string, into interface{}) error {
+func (grk *goRedisKu) Get(key string, into interface{}) error {
 	fromRedis, err := grk.Client.Get(ctx, key).Result()
 	if err != nil {
 		return err
@@ -179,6 +185,6 @@ func (grk *GoRedisKu) Get(key string, into interface{}) error {
 }
 
 // Del key value from redis cache db
-func (grk *GoRedisKu) Del(key string) (int64, error) {
+func (grk *goRedisKu) Del(key string) (int64, error) {
 	return grk.Client.Del(ctx, key).Result()
 }
