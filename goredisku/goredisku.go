@@ -10,7 +10,11 @@ import (
 	"github.com/vmihailenco/msgpack"
 )
 
-type wgAndMtx func(wg *sync.WaitGroup, m *sync.Mutex)
+type wgAndMtx func(
+	wg *sync.WaitGroup,
+	mtx *sync.Mutex,
+)
+
 type event func()
 
 var ctx = context.Background()
@@ -53,24 +57,75 @@ func (rc RedisCred) Connect() *redis.Client {
 	})
 }
 
-func (grk *GoRedisKu) store() {
-	fmt.Println("Inserting to Cache")
-}
-
-func (grk *GoRedisKu) storeConcurrently(wg *sync.WaitGroup, mtx *sync.Mutex) {
+func (grk *GoRedisKu) storeSync(
+	key string,
+	value interface{},
+	wg *sync.WaitGroup,
+	mtx *sync.Mutex,
+) error {
+	fmt.Println("Doing cache insertion")
+	fatalErrors := make(chan error)
 	mtx.Lock()
-	fmt.Println("Inserting to Cache")
-	time.Sleep(1 * time.Second)
+	go func() {
+		// delete existing cache
+		_, err := grk.Client.Del(ctx, key).Result()
+		if err != nil {
+			fatalErrors <- err
+		}
+
+		// create new cache
+		result, err := msgpack.Marshal(value)
+		if err != nil {
+			fatalErrors <- err
+		}
+		_, err = grk.Client.SetNX(ctx, key, result, grk.GlobalExpire).Result()
+		if err != nil {
+			fatalErrors <- err
+		}
+	}()
 	mtx.Unlock()
 	wg.Done()
+	close(fatalErrors)
+	return <-fatalErrors
+}
+
+func (grk *GoRedisKu) store(
+	key string,
+	value interface{},
+) error {
+	fmt.Println("Doing cache insertion")
+	// delete existing cache
+	_, err := grk.Client.Del(ctx, key).Result()
+	if err != nil {
+		return err
+	}
+
+	// create new cache
+	result, err := msgpack.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = grk.Client.SetNX(ctx, key, result, grk.GlobalExpire).Result()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // WT is Write Through mechanism for storing cache
-func (grk *GoRedisKu) WT(dbInteract event) error {
+func (grk *GoRedisKu) WT(
+	key string,
+	value interface{},
+	dbInteract event,
+) error {
 	var wg sync.WaitGroup
 	var mtx sync.Mutex
 	wg.Add(1)
-	go grk.storeConcurrently(&wg, &mtx)
+
+	err := grk.storeSync(key, value, &wg, &mtx)
+	if err != nil {
+		return err
+	}
 
 	wg.Wait()
 	dbInteract()
@@ -78,18 +133,22 @@ func (grk *GoRedisKu) WT(dbInteract event) error {
 }
 
 // WB is Write Back mechanism for storing cache
-func (grk *GoRedisKu) WB(dbInteract event) error {
+func (grk *GoRedisKu) WB(
+	key string,
+	value interface{},
+	dbInteract wgAndMtx,
+) error {
 	var wg sync.WaitGroup
 	var mtx sync.Mutex
 	wg.Add(1)
-	mtx.Lock()
-	go dbInteract()
-	time.Sleep(1 * time.Second)
-	mtx.Unlock()
-	wg.Done()
+
+	go dbInteract(&wg, &mtx)
 
 	wg.Wait()
-	grk.store()
+	err := grk.store(key, value)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

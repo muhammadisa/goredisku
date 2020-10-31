@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/muhammadisa/goredisku/goredisku"
@@ -30,14 +31,34 @@ func main() {
 		GlobalExpire: time.Duration(60000) * time.Millisecond,
 	}
 
+	person1 := Person{
+		FirstName: "Muhammad Isa",
+		LastName:  "Wijaya Kusuma 1",
+		Age:       21,
+	}
+
+	person2 := Person{
+		FirstName: "Olav",
+		LastName:  "Alan Walker 2",
+		Age:       28,
+	}
+
 	command.WT(
+		"person_1",
+		person1,
 		func() {
 			fmt.Println("Write through db")
 		},
 	)
 	command.WB(
-		func() {
+		"person_2",
+		person2,
+		func(wg *sync.WaitGroup, mtx *sync.Mutex) {
+			mtx.Lock()
 			fmt.Println("Write back db")
+			time.Sleep(3 * time.Second)
+			mtx.Unlock()
+			wg.Done()
 		},
 	)
 
